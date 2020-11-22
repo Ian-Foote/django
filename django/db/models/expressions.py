@@ -158,6 +158,8 @@ class BaseExpression:
     filterable = True
     # Can the expression can be used as a source expression in Window?
     window_compatible = False
+    # Can the expression be used as a database default value?
+    allowed_default = False
 
     def __init__(self, output_field=None):
         if output_field is not None:
@@ -513,6 +515,10 @@ class CombinedExpression(SQLiteNumericMixin, Expression):
         c.rhs = rhs
         return c
 
+    @cached_property
+    def allowed_default(self):
+        return self.lhs.allowed_default and self.rhs.allowed_default
+
 
 class DurationExpression(CombinedExpression):
     def compile(self, side, compiler, connection):
@@ -560,6 +566,8 @@ class TemporalSubtraction(CombinedExpression):
 @deconstructible
 class F(Combinable):
     """An object capable of resolving references to existing query objects."""
+
+    allowed_default = False
 
     def __init__(self, name):
         """
@@ -703,12 +711,17 @@ class Func(SQLiteNumericMixin, Expression):
         copy.extra = self.extra.copy()
         return copy
 
+    @cached_property
+    def allowed_default(self):
+        return all(expression.allowed_default for expression in self.source_expressions)
+
 
 class Value(Expression):
     """Represent a wrapped value as a node within an expression."""
     # Provide a default value for `for_save` in order to allow unresolved
     # instances to be compiled until a decision is taken in #25425.
     for_save = False
+    allowed_default = True
 
     def __init__(self, value, output_field=None):
         """

@@ -186,7 +186,7 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         if create_field:
             body[create_field.name] = create_field
             # Choose a default and insert it into the copy map
-            if not create_field.many_to_many and create_field.concrete:
+            if not create_field.has_db_default() and not create_field.many_to_many and create_field.concrete:
                 mapping[create_field.column] = self.quote_value(
                     self.effective_default(create_field)
                 )
@@ -197,9 +197,13 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
             mapping.pop(old_field.column, None)
             body[new_field.name] = new_field
             if old_field.null and not new_field.null:
+                if new_field.has_db_default():
+                    default, _ = new_field.db_default_sql(self)
+                else:
+                    default = self.quote_value(self.effective_default(new_field))
                 case_sql = "coalesce(%(col)s, %(default)s)" % {
                     'col': self.quote_name(old_field.column),
-                    'default': self.quote_value(self.effective_default(new_field))
+                    'default': default,
                 }
                 mapping[new_field.column] = case_sql
             else:

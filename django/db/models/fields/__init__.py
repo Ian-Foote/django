@@ -47,6 +47,10 @@ class NOT_PROVIDED:
     pass
 
 
+class DB_DEFAULT:
+    pass
+
+
 # The values to use for "blank" in SelectFields. Will be appended to the start
 # of most "choices" lists.
 BLANK_CHOICE_DASH = [("", "---------")]
@@ -134,7 +138,7 @@ class Field(RegisterLookupMixin):
                  serialize=True, unique_for_date=None, unique_for_month=None,
                  unique_for_year=None, choices=None, help_text='', db_column=None,
                  db_tablespace=None, auto_created=False, validators=(),
-                 error_messages=None):
+                 error_messages=None, db_default=NOT_PROVIDED):
         self.name = name
         self.verbose_name = verbose_name  # May be set by set_attributes_from_name
         self._verbose_name = verbose_name  # Store original for deconstruction
@@ -144,6 +148,12 @@ class Field(RegisterLookupMixin):
         self.remote_field = rel
         self.is_relation = self.remote_field is not None
         self.default = default
+        if db_default is not NOT_PROVIDED:
+            from django.db.models.expressions import Value
+            if not hasattr(db_default, 'resolve_expression'):
+                db_default = Value(db_default)
+            connection.ops.check_field_default_support(db_default)
+        self.db_default = db_default
         self.editable = editable
         self.serialize = serialize
         self.unique_for_date = unique_for_date
@@ -457,6 +467,7 @@ class Field(RegisterLookupMixin):
             "null": False,
             "db_index": False,
             "default": NOT_PROVIDED,
+            "db_default": NOT_PROVIDED,
             "editable": True,
             "serialize": True,
             "unique_for_date": None,
@@ -763,7 +774,7 @@ class Field(RegisterLookupMixin):
         Private API intended only to be used by Django itself. Currently only
         the PostgreSQL backend supports returning multiple fields on a model.
         """
-        return False
+        return self.db_default is not NOT_PROVIDED
 
     def set_attributes_from_name(self, name):
         self.name = self.name or name
@@ -857,9 +868,36 @@ class Field(RegisterLookupMixin):
                 return self.default
             return lambda: self.default
 
+        if self.has_db_default():
+            return lambda: DB_DEFAULT
+
         if not self.empty_strings_allowed or self.null and not connection.features.interprets_empty_strings_as_nulls:
             return return_None
         return str  # return empty string
+
+    def has_db_default(self):
+        """Return a boolean of whether this field has a database default value."""
+        return self.db_default is not NOT_PROVIDED
+
+    def db_default_sql(self, schema_editor):
+        from django.db.models.expressions import Value
+        from django.db.models.sql.query import Query
+
+        connection = schema_editor.connection
+        if isinstance(self.db_default, Value):
+            default_sql = '%s'
+        elif not connection.features.supports_functions_in_defaults:
+            default_sql = '%s'
+        else:
+            default_sql = '(%s)'
+
+        query = Query(model=self.model)
+        compiler = query.get_compiler(connection=connection)
+        sql, params = compiler.compile(self.db_default)
+        if connection.vendor == 'sqlite':
+            sql %= tuple(schema_editor.quote_value(value) for value in params)
+            params = []
+        return default_sql % sql, params
 
     def get_choices(self, include_blank=True, blank_choice=BLANK_CHOICE_DASH, limit_choices_to=None, ordering=()):
         """

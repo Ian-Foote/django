@@ -222,6 +222,12 @@ class BaseDatabaseSchemaEditor:
             sql += self._collate_sql(collation)
         # Work out nullability
         null = field.null
+        # Add database default
+        if field.has_db_default():
+            default_sql, db_default = field.db_default_sql(self)
+            sql += ' DEFAULT ' + default_sql
+            params += db_default
+            include_default = False
         # If we were told to include a default value, do so
         include_default = include_default and not self.skip_default(field)
         if include_default:
@@ -693,6 +699,19 @@ class BaseDatabaseSchemaEditor:
             fragment, other_actions = self._alter_column_type_sql(model, old_field, new_field, new_type)
             actions.append(fragment)
             post_actions.extend(other_actions)
+
+        if new_field.has_db_default():
+            if not old_field.has_db_default() or new_field.db_default != old_field.db_default:
+                changes_sql, params = self._alter_column_database_default_sql(
+                    model, old_field, new_field
+                )
+                actions.append((changes_sql, params))
+        elif old_field.has_db_default():
+            changes_sql, params = self._alter_column_database_default_sql(
+                model, new_field, old_field, drop=True
+            )
+            actions.append((changes_sql, params))
+
         # When changing a column NULL constraint to NOT NULL with a given
         # default value, we need to perform 4 steps:
         #  1. Add a default for new incoming writes
@@ -718,7 +737,7 @@ class BaseDatabaseSchemaEditor:
                 null_actions.append(fragment)
         # Only if we have a default and there is a change from NULL to NOT NULL
         four_way_default_alteration = (
-            new_field.has_default() and
+            (new_field.has_default() or new_field.has_db_default()) and
             (old_field.null and not new_field.null)
         )
         if actions or null_actions:
@@ -740,14 +759,19 @@ class BaseDatabaseSchemaEditor:
                     params,
                 )
             if four_way_default_alteration:
+                if new_field.has_db_default():
+                    default_sql, new_default = new_field.db_default_sql(self)
+                else:
+                    default_sql = "%s"
+                    new_default = [new_default]
                 # Update existing rows with default value
                 self.execute(
                     self.sql_update_with_default % {
                         "table": self.quote_name(model._meta.db_table),
                         "column": self.quote_name(new_field.column),
-                        "default": "%s",
+                        "default": default_sql,
                     },
-                    [new_default],
+                    new_default,
                 )
                 # Since we didn't run a NOT NULL change before we need to do it
                 # now
@@ -874,6 +898,37 @@ class BaseDatabaseSchemaEditor:
             # implement prepare_default().
             default = self.prepare_default(new_default)
             params = []
+
+        new_db_params = new_field.db_parameters(connection=self.connection)
+        sql = self.sql_alter_column_no_default if drop else self.sql_alter_column_default
+        return (
+            sql % {
+                'column': self.quote_name(new_field.column),
+                'type': new_db_params['type'],
+                'default': default,
+            },
+            params,
+        )
+
+    def _alter_column_database_default_sql(self, model, old_field, new_field, drop=False):
+        """
+        Hook to specialize column database default alteration.
+
+        Return a (sql, params) fragment to add or drop (depending on the drop
+        argument) a default to new_field's column.
+        """
+        default, db_default = new_field.db_default_sql(self)
+
+        if drop:
+            params = []
+        elif self.connection.features.requires_literal_defaults:
+            # Some databases (Oracle) can't take defaults as a parameter
+            # If this is the case, the SchemaEditor for that database should
+            # implement prepare_default().
+            default = self.prepare_default(db_default)
+            params = []
+        else:
+            params = db_default
 
         new_db_params = new_field.db_parameters(connection=self.connection)
         sql = self.sql_alter_column_no_default if drop else self.sql_alter_column_default

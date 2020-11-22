@@ -22,6 +22,7 @@ from django.db.models import (
 from django.db.models.constants import LOOKUP_SEP
 from django.db.models.constraints import CheckConstraint, UniqueConstraint
 from django.db.models.deletion import CASCADE, Collector
+from django.db.models.fields import DB_DEFAULT
 from django.db.models.fields.related import (
     ForeignObjectRel, OneToOneField, lazy_related_operation, resolve_relation,
 )
@@ -864,6 +865,7 @@ class Model(metaclass=ModelBase):
             if not pk_set:
                 fields = [f for f in fields if f is not meta.auto_field]
 
+            fields = [f for f in fields if getattr(self, f.attname) is not DB_DEFAULT]
             returning_fields = meta.db_returning_fields
             results = self._do_insert(cls._base_manager, using, fields, returning_fields, raw)
             if results:

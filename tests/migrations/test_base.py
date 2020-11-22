@@ -212,6 +212,7 @@ class OperationTestBase(MigrationTestBase):
                 ('id', models.AutoField(primary_key=True)),
                 ('pink', models.IntegerField(default=3)),
                 ('weight', models.FloatField()),
+                ('green', models.IntegerField(null=True)),
             ],
             options=model_options,
         )]
